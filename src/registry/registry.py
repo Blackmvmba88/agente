@@ -24,6 +24,15 @@ class SongRegistry:
     def get(self, song_id: str) -> Song | None:
         return next((song for song in self.songs if song.song_id == song_id), None)
 
+    def find_by_source_fingerprint(self, fingerprint: str) -> Song | None:
+        return next(
+            (song for song in self.songs if song.source_fingerprint == fingerprint),
+            None,
+        )
+
+    def find_by_lyrics_fingerprint(self, fingerprint: str) -> list[Song]:
+        return [song for song in self.songs if song.lyrics_fingerprint == fingerprint]
+
     def search(self, query: str) -> list[Song]:
         needle = query.casefold()
         return [
@@ -85,6 +94,8 @@ class SongRegistry:
                     lyrics=item["lyrics"],
                     source_type=source_info["type"],
                     source_path=source_info["path"],
+                    source_fingerprint=item.get("source_fingerprint"),
+                    lyrics_fingerprint=item.get("lyrics_fingerprint"),
                     status=item.get("status", "indexed"),
                 )
             )
