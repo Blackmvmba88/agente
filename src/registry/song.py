@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class Song:
-    """Canonical immutable song record for BlackMamba Agent v0.1."""
+    """Canonical immutable song record for BlackMamba Agent."""
 
     song_id: str
     title: str
@@ -14,10 +14,12 @@ class Song:
     lyrics: str
     source_type: str
     source_path: str
+    source_fingerprint: str | None = None
+    lyrics_fingerprint: str | None = None
     status: str = "indexed"
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "song_id": self.song_id,
             "title": self.title,
             "artist": self.artist,
@@ -29,3 +31,8 @@ class Song:
             },
             "status": self.status,
         }
+        if self.source_fingerprint is not None:
+            payload["source_fingerprint"] = self.source_fingerprint
+        if self.lyrics_fingerprint is not None:
+            payload["lyrics_fingerprint"] = self.lyrics_fingerprint
+        return payload
