@@ -24,12 +24,71 @@ class SongRegistry:
     def get(self, song_id: str) -> Song | None:
         return next((song for song in self.songs if song.song_id == song_id), None)
 
+    def search(self, query: str) -> list[Song]:
+        needle = query.casefold()
+        return [
+            song
+            for song in self.songs
+            if needle in song.song_id.casefold()
+            or needle in song.title.casefold()
+            or needle in song.artist.casefold()
+            or needle in song.lyrics.casefold()
+        ]
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        song_ids: set[str] = set()
+        lyrics_ids: set[str] = set()
+
+        for song in self.songs:
+            if song.song_id in song_ids:
+                errors.append(f"duplicate song_id: {song.song_id}")
+            song_ids.add(song.song_id)
+
+            if song.lyrics_id in lyrics_ids:
+                errors.append(f"duplicate lyrics_id: {song.lyrics_id}")
+            lyrics_ids.add(song.lyrics_id)
+
+            if not song.title.strip():
+                errors.append(f"missing title: {song.song_id}")
+            if not song.artist.strip():
+                errors.append(f"missing artist: {song.song_id}")
+
+        return errors
+
     def to_dict(self) -> dict[str, object]:
         ordered = sorted(self.songs, key=lambda song: song.song_id)
         return {
             "schema_version": SCHEMA_VERSION,
             "songs": [song.to_dict() for song in ordered],
         }
+
+    @classmethod
+    def load(cls, path: str | Path) -> "SongRegistry":
+        source = Path(path)
+        if not source.exists():
+            return cls()
+
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError(f"unsupported schema_version: {payload.get('schema_version')}")
+
+        registry = cls()
+        for item in payload.get("songs", []):
+            source_info = item["source"]
+            registry.add(
+                Song(
+                    song_id=item["song_id"],
+                    title=item["title"],
+                    artist=item["artist"],
+                    lyrics_id=item["lyrics_id"],
+                    lyrics=item["lyrics"],
+                    source_type=source_info["type"],
+                    source_path=source_info["path"],
+                    status=item.get("status", "indexed"),
+                )
+            )
+        return registry
 
     def save(self, path: str | Path) -> None:
         target = Path(path)
