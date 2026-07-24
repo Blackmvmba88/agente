@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -34,6 +35,10 @@ def _build_parser() -> argparse.ArgumentParser:
     search.add_argument("query")
 
     sub.add_parser("validate", help="validate registry invariants")
+    sub.add_parser("doctor", help="run catalog integrity diagnostics")
+    sub.add_parser("duplicates", help="report duplicate lyrics groups")
+    sub.add_parser("conflicts", help="emit structured catalog conflicts")
+    sub.add_parser("stats", help="show catalog integrity statistics")
     return parser
 
 
@@ -114,6 +119,44 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    registry = SongRegistry.load(_registry_path(args.registry))
+    findings = registry.doctor()
+    if not findings:
+        print(f"healthy: {len(registry.songs)} songs")
+        return 0
+    for finding in findings:
+        print(finding)
+    return 1
+
+
+def _cmd_duplicates(args: argparse.Namespace) -> int:
+    registry = SongRegistry.load(_registry_path(args.registry))
+    groups = registry.duplicate_groups()
+    if not groups:
+        print("no duplicate lyrics groups")
+        return 0
+    for group in groups:
+        ids = ", ".join(song.song_id for song in group)
+        print(f"duplicate lyrics: {ids}")
+    return 1
+
+
+def _cmd_conflicts(args: argparse.Namespace) -> int:
+    registry = SongRegistry.load(_registry_path(args.registry))
+    report = registry.conflict_report()
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return 1 if report else 0
+
+
+def _cmd_stats(args: argparse.Namespace) -> int:
+    registry = SongRegistry.load(_registry_path(args.registry))
+    stats = registry.stats()
+    for key in sorted(stats):
+        print(f"{key}: {stats[key]}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     handlers = {
@@ -122,6 +165,10 @@ def main(argv: list[str] | None = None) -> int:
         "show": _cmd_show,
         "search": _cmd_search,
         "validate": _cmd_validate,
+        "doctor": _cmd_doctor,
+        "duplicates": _cmd_duplicates,
+        "conflicts": _cmd_conflicts,
+        "stats": _cmd_stats,
     }
     return handlers[args.command](args)
 
