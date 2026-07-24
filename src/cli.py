@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .indexer import index_text_source
@@ -24,6 +26,8 @@ def _build_parser() -> argparse.ArgumentParser:
     scan = sub.add_parser("scan", help="index text files from a file or directory")
     scan.add_argument("path")
     scan.add_argument("--artist", help="default artist for files without Artist: metadata")
+    scan.add_argument("--report", help="write structured import report JSON")
+    scan.add_argument("--no-backup", action="store_true", help="skip registry backup before save")
 
     sub.add_parser("list", help="list indexed songs")
 
@@ -34,6 +38,10 @@ def _build_parser() -> argparse.ArgumentParser:
     search.add_argument("query")
 
     sub.add_parser("validate", help="validate registry invariants")
+    sub.add_parser("doctor", help="run catalog integrity diagnostics")
+    sub.add_parser("duplicates", help="report duplicate lyrics groups")
+    sub.add_parser("conflicts", help="emit structured catalog conflicts")
+    sub.add_parser("stats", help="show catalog integrity statistics")
     return parser
 
 
@@ -49,25 +57,65 @@ def _discover_sources(path: Path) -> list[Path]:
     )
 
 
+def _write_import_report(path: Path, report: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     registry_path = _registry_path(args.registry)
     registry = SongRegistry.load(registry_path)
     sources = _discover_sources(Path(args.path))
 
-    indexed = 0
-    failed = 0
+    successes: list[dict[str, str]] = []
+    failures: list[dict[str, str]] = []
+
     for source in sources:
         try:
             song = index_text_source(source, registry, default_artist=args.artist)
             print(f"indexed {song.song_id}  {song.title}")
-            indexed += 1
+            successes.append(
+                {
+                    "source": str(source),
+                    "song_id": song.song_id,
+                    "title": song.title,
+                }
+            )
         except (OSError, UnicodeError, ValueError) as exc:
             print(f"error {source}: {exc}", file=sys.stderr)
-            failed += 1
+            failures.append(
+                {
+                    "source": str(source),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
 
-    registry.save(registry_path)
-    print(f"indexed={indexed} failed={failed} registry={registry_path}")
-    return 1 if failed else 0
+    registry.save(registry_path, backup=not args.no_backup)
+
+    report = {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source_root": str(Path(args.path)),
+        "registry": str(registry_path),
+        "discovered": len(sources),
+        "indexed": len(successes),
+        "failed": len(failures),
+        "successes": successes,
+        "failures": failures,
+    }
+    if args.report:
+        report_path = Path(args.report)
+        _write_import_report(report_path, report)
+        print(f"report={report_path}")
+
+    print(
+        f"indexed={len(successes)} failed={len(failures)} registry={registry_path}"
+    )
+    return 1 if failures else 0
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
@@ -114,6 +162,44 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    registry = SongRegistry.load(_registry_path(args.registry))
+    findings = registry.doctor()
+    if not findings:
+        print(f"healthy: {len(registry.songs)} songs")
+        return 0
+    for finding in findings:
+        print(finding)
+    return 1
+
+
+def _cmd_duplicates(args: argparse.Namespace) -> int:
+    registry = SongRegistry.load(_registry_path(args.registry))
+    groups = registry.duplicate_groups()
+    if not groups:
+        print("no duplicate lyrics groups")
+        return 0
+    for group in groups:
+        ids = ", ".join(song.song_id for song in group)
+        print(f"duplicate lyrics: {ids}")
+    return 1
+
+
+def _cmd_conflicts(args: argparse.Namespace) -> int:
+    registry = SongRegistry.load(_registry_path(args.registry))
+    report = registry.conflict_report()
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return 1 if report else 0
+
+
+def _cmd_stats(args: argparse.Namespace) -> int:
+    registry = SongRegistry.load(_registry_path(args.registry))
+    stats = registry.stats()
+    for key in sorted(stats):
+        print(f"{key}: {stats[key]}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     handlers = {
@@ -122,6 +208,10 @@ def main(argv: list[str] | None = None) -> int:
         "show": _cmd_show,
         "search": _cmd_search,
         "validate": _cmd_validate,
+        "doctor": _cmd_doctor,
+        "duplicates": _cmd_duplicates,
+        "conflicts": _cmd_conflicts,
+        "stats": _cmd_stats,
     }
     return handlers[args.command](args)
 

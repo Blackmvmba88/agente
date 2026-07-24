@@ -24,6 +24,11 @@ def source_fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def lyrics_fingerprint(lyrics: str) -> str:
+    normalized = "\n".join(line.rstrip() for line in lyrics.strip().splitlines())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def index_text_source(
     path: str | Path,
     registry: SongRegistry,
@@ -34,6 +39,12 @@ def index_text_source(
 
     source = Path(path)
     text = read_text_source(source)
+    source_fp = source_fingerprint(text)
+
+    existing = registry.find_by_source_fingerprint(source_fp)
+    if existing is not None:
+        return existing
+
     parsed = parse_song_text(text, source_path=source)
 
     if not parsed.title:
@@ -42,6 +53,12 @@ def index_text_source(
     artist = parsed.artist or default_artist
     if not artist:
         raise ValueError(f"missing artist: {source}")
+
+    lyrics_fp = lyrics_fingerprint(parsed.lyrics)
+    lyrics_matches = registry.find_by_lyrics_fingerprint(lyrics_fp)
+    if lyrics_matches:
+        ids = ", ".join(song.song_id for song in lyrics_matches)
+        raise ValueError(f"ambiguous duplicate lyrics: {source} matches {ids}")
 
     song_id = _next_numeric_id("bm_song_", {song.song_id for song in registry.songs})
     lyrics_id = _next_numeric_id("bm_lyrics_", {song.lyrics_id for song in registry.songs})
@@ -54,6 +71,8 @@ def index_text_source(
         lyrics=parsed.lyrics,
         source_type="text",
         source_path=str(source),
+        source_fingerprint=source_fp,
+        lyrics_fingerprint=lyrics_fp,
     )
     registry.add(song)
     return song
