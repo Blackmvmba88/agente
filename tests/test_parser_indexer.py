@@ -67,3 +67,33 @@ def test_indexer_rejects_missing_artist_without_default(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="missing artist"):
         index_text_source(source, SongRegistry())
+
+
+def test_reindexing_identical_source_reuses_canonical_identity(tmp_path: Path) -> None:
+    source = tmp_path / "Fire.txt"
+    source.write_text("Title: Fire\nArtist: Iyari Gomez\n\nBurning line\n", encoding="utf-8")
+    registry = SongRegistry()
+
+    first = index_text_source(source, registry)
+    second = index_text_source(source, registry)
+
+    assert second is first
+    assert second.song_id == "bm_song_000001"
+    assert len(registry.songs) == 1
+    assert first.source_fingerprint is not None
+    assert first.lyrics_fingerprint is not None
+
+
+def test_duplicate_lyrics_from_different_source_is_reported_not_merged(tmp_path: Path) -> None:
+    first = tmp_path / "Fire.txt"
+    second = tmp_path / "Fire Copy.txt"
+    first.write_text("Title: Fire\nArtist: Iyari Gomez\n\nSame lyrics\n", encoding="utf-8")
+    second.write_text("Title: Fire Copy\nArtist: Iyari Gomez\n\nSame lyrics\n", encoding="utf-8")
+    registry = SongRegistry()
+
+    original = index_text_source(first, registry)
+
+    with pytest.raises(ValueError, match=f"ambiguous duplicate lyrics: .* matches {original.song_id}"):
+        index_text_source(second, registry)
+
+    assert len(registry.songs) == 1
