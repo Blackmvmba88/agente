@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,6 +33,63 @@ class SongRegistry:
 
     def find_by_lyrics_fingerprint(self, fingerprint: str) -> list[Song]:
         return [song for song in self.songs if song.lyrics_fingerprint == fingerprint]
+
+    def duplicate_groups(self) -> list[list[Song]]:
+        groups: dict[str, list[Song]] = defaultdict(list)
+        for song in self.songs:
+            if song.lyrics_fingerprint:
+                groups[song.lyrics_fingerprint].append(song)
+        return [
+            sorted(group, key=lambda item: item.song_id)
+            for group in groups.values()
+            if len(group) > 1
+        ]
+
+    def conflict_report(self) -> list[dict[str, object]]:
+        conflicts: list[dict[str, object]] = []
+        for group in self.duplicate_groups():
+            conflicts.append(
+                {
+                    "type": "duplicate_lyrics",
+                    "lyrics_fingerprint": group[0].lyrics_fingerprint,
+                    "song_ids": [song.song_id for song in group],
+                    "sources": [song.source_path for song in group],
+                }
+            )
+        return conflicts
+
+    def doctor(self) -> list[str]:
+        errors = self.validate()
+        warnings: list[str] = []
+
+        for song in self.songs:
+            if not song.source_fingerprint:
+                warnings.append(f"missing source_fingerprint: {song.song_id}")
+            if not song.lyrics_fingerprint:
+                warnings.append(f"missing lyrics_fingerprint: {song.song_id}")
+
+        for conflict in self.conflict_report():
+            warnings.append(
+                "duplicate lyrics fingerprint: "
+                + ", ".join(conflict["song_ids"])
+            )
+
+        return errors + warnings
+
+    def stats(self) -> dict[str, int]:
+        duplicate_groups = self.duplicate_groups()
+        duplicate_records = sum(len(group) for group in duplicate_groups)
+        return {
+            "songs": len(self.songs),
+            "duplicate_groups": len(duplicate_groups),
+            "duplicate_records": duplicate_records,
+            "missing_source_fingerprints": sum(
+                1 for song in self.songs if not song.source_fingerprint
+            ),
+            "missing_lyrics_fingerprints": sum(
+                1 for song in self.songs if not song.lyrics_fingerprint
+            ),
+        }
 
     def search(self, query: str) -> list[Song]:
         needle = query.casefold()
