@@ -7,10 +7,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .assets import AssetRef, CatalogAsset
 from .song import Song
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+ASSET_PREFIXES = {
+    "lyrics": "bm_lyrics_",
+    "audio": "bm_audio_",
+    "artwork": "bm_artwork_",
+    "release": "bm_release_",
+}
 
 
 def migrate_payload(payload: dict[str, object]) -> dict[str, object]:
@@ -23,13 +30,16 @@ def migrate_payload(payload: dict[str, object]) -> dict[str, object]:
         raise ValueError(f"unsupported future schema_version: {version}")
 
     migrated = dict(payload)
-    migrated["schema_version"] = SCHEMA_VERSION
+    if version == 1:
+        migrated.setdefault("assets", [])
+        migrated["schema_version"] = 2
     return migrated
 
 
 @dataclass
 class SongRegistry:
     songs: list[Song] = field(default_factory=list)
+    assets: list[CatalogAsset] = field(default_factory=list)
 
     def add(self, song: Song) -> None:
         if any(existing.song_id == song.song_id for existing in self.songs):
@@ -38,8 +48,23 @@ class SongRegistry:
             raise ValueError(f"duplicate lyrics_id: {song.lyrics_id}")
         self.songs.append(song)
 
+    def add_asset(self, asset: CatalogAsset) -> None:
+        if any(existing.asset_id == asset.asset_id for existing in self.assets):
+            raise ValueError(f"duplicate asset_id: {asset.asset_id}")
+        expected_prefix = ASSET_PREFIXES.get(asset.asset_type)
+        if expected_prefix and not asset.asset_id.startswith(expected_prefix):
+            raise ValueError(f"invalid {asset.asset_type} asset_id: {asset.asset_id}")
+        self.assets.append(asset)
+
     def get(self, song_id: str) -> Song | None:
         return next((song for song in self.songs if song.song_id == song_id), None)
+
+    def get_asset(self, asset_id: str) -> CatalogAsset | None:
+        return next((asset for asset in self.assets if asset.asset_id == asset_id), None)
+
+    def relationships_for(self, song_id: str) -> tuple[AssetRef, ...]:
+        song = self.get(song_id)
+        return song.relationships if song else ()
 
     def find_by_source_fingerprint(self, fingerprint: str) -> Song | None:
         return next(
@@ -97,6 +122,8 @@ class SongRegistry:
         duplicate_records = sum(len(group) for group in duplicate_groups)
         return {
             "songs": len(self.songs),
+            "assets": len(self.assets),
+            "relationships": sum(len(song.relationships) for song in self.songs),
             "duplicate_groups": len(duplicate_groups),
             "duplicate_records": duplicate_records,
             "missing_source_fingerprints": sum(
@@ -122,6 +149,12 @@ class SongRegistry:
         errors: list[str] = []
         song_ids: set[str] = set()
         lyrics_ids: set[str] = set()
+        asset_ids: set[str] = set()
+
+        for asset in self.assets:
+            if asset.asset_id in asset_ids:
+                errors.append(f"duplicate asset_id: {asset.asset_id}")
+            asset_ids.add(asset.asset_id)
 
         for song in self.songs:
             if song.song_id in song_ids:
@@ -137,13 +170,23 @@ class SongRegistry:
             if not song.artist.strip():
                 errors.append(f"missing artist: {song.song_id}")
 
+            for relationship in song.relationships:
+                if relationship.asset_type == "lyrics" and relationship.asset_id == song.lyrics_id:
+                    continue
+                if relationship.asset_id not in asset_ids:
+                    errors.append(
+                        f"missing related asset: {song.song_id} -> {relationship.asset_id}"
+                    )
+
         return errors
 
     def to_dict(self) -> dict[str, object]:
-        ordered = sorted(self.songs, key=lambda song: song.song_id)
+        ordered_songs = sorted(self.songs, key=lambda song: song.song_id)
+        ordered_assets = sorted(self.assets, key=lambda asset: asset.asset_id)
         return {
             "schema_version": SCHEMA_VERSION,
-            "songs": [song.to_dict() for song in ordered],
+            "songs": [song.to_dict() for song in ordered_songs],
+            "assets": [asset.to_dict() for asset in ordered_assets],
         }
 
     @classmethod
@@ -156,8 +199,28 @@ class SongRegistry:
         payload = migrate_payload(payload)
 
         registry = cls()
+        for asset_item in payload.get("assets", []):
+            source_info = asset_item.get("source") or {}
+            registry.add_asset(
+                CatalogAsset(
+                    asset_id=asset_item["asset_id"],
+                    asset_type=asset_item["asset_type"],
+                    source_type=source_info.get("type"),
+                    source_path=source_info.get("path"),
+                    status=asset_item.get("status", "indexed"),
+                )
+            )
+
         for item in payload.get("songs", []):
             source_info = item["source"]
+            relationships = tuple(
+                AssetRef(
+                    asset_id=relationship["asset_id"],
+                    asset_type=relationship["asset_type"],
+                    status=relationship.get("status", "linked"),
+                )
+                for relationship in item.get("relationships", [])
+            )
             registry.add(
                 Song(
                     song_id=item["song_id"],
@@ -169,6 +232,7 @@ class SongRegistry:
                     source_path=source_info["path"],
                     source_fingerprint=item.get("source_fingerprint"),
                     lyrics_fingerprint=item.get("lyrics_fingerprint"),
+                    relationships=relationships,
                     status=item.get("status", "indexed"),
                 )
             )
