@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .assets import AssetRef
+
 
 @dataclass(frozen=True, slots=True)
 class Song:
@@ -16,6 +18,7 @@ class Song:
     source_path: str
     source_fingerprint: str | None = None
     lyrics_fingerprint: str | None = None
+    relationships: tuple[AssetRef, ...] = ()
     status: str = "indexed"
 
     def to_dict(self) -> dict[str, object]:
@@ -35,4 +38,6 @@ class Song:
             payload["source_fingerprint"] = self.source_fingerprint
         if self.lyrics_fingerprint is not None:
             payload["lyrics_fingerprint"] = self.lyrics_fingerprint
+        if self.relationships:
+            payload["relationships"] = [relationship.to_dict() for relationship in self.relationships]
         return payload
